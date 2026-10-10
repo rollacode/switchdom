@@ -357,7 +357,6 @@ impl LanguageModel for NgramModel {
             if !self.alphabet.contains(lower) {
                 evidence.script_matches = false;
                 evidence.all_caps = saw_uppercase && !saw_lowercase;
-                previous = None;
                 return LanguageAssessment {
                     confidence: 0.0,
                     lexical_evidence: evidence,

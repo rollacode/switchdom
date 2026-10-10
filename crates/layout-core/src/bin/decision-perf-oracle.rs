@@ -141,7 +141,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     if arguments.json {
         println!(
             concat!(
-                "{\"oracle\":\"decision-perf-oracle\",",
+                "{{\"oracle\":\"decision-perf-oracle\",",
                 "\"crate_version\":\"{}\",",
                 "\"os\":\"{}\",\"arch\":\"{}\",\"profile\":\"{}\",",
                 "\"rustc\":\"{}\",\"fixture_cases\":{},",
