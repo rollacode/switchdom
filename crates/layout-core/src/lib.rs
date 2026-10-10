@@ -175,6 +175,19 @@ impl LayoutMapping {
         &self.provenance
     }
 
+    /// Read-only bounded mapping metadata for native layout verification.
+    /// Key IDs are profile identifiers, not operating-system keycodes.
+    /// Iteration order is unspecified; callers may sort outside input callbacks.
+    pub fn assignments(&self) -> impl ExactSizeIterator<Item = KeyAssignment> + '_ {
+        self.stroke_to_character
+            .iter()
+            .map(|(stroke, character)| KeyAssignment {
+                key_id: stroke.key_id,
+                shifted: stroke.shifted,
+                character: *character,
+            })
+    }
+
     fn stroke_for(&self, character: char) -> Option<KeyStroke> {
         self.character_to_stroke.get(&character).copied()
     }
@@ -288,6 +301,10 @@ impl LanguageProfile {
 
     pub fn mapping_provenance(&self) -> &VersionedProvenance {
         self.mapping.provenance()
+    }
+
+    pub fn mapping(&self) -> &LayoutMapping {
+        &self.mapping
     }
 
     pub fn model_provenance(&self) -> &VersionedProvenance {
@@ -703,6 +720,29 @@ fn convert_candidate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exposes_bounded_physical_mapping_for_native_verification() {
+        let profiles = russian_english_layout_set().expect("valid shipped profiles");
+        let english = profiles.profile(&LayoutId::from("en-qwerty")).unwrap();
+        let russian = profiles.profile(&LayoutId::from("ru-jcuken")).unwrap();
+        let english_keys: Vec<_> = english.mapping().assignments().collect();
+        let russian_keys: Vec<_> = russian.mapping().assignments().collect();
+        assert!(!english_keys.is_empty());
+        assert!(english_keys.len() <= MAX_LAYOUT_ASSIGNMENTS);
+        assert_eq!(english_keys.len(), russian_keys.len());
+        for (source_char, target_char) in [('q', 'й'), ('Q', 'Й'), ('f', 'а'), ('F', 'А')] {
+            let source = english_keys
+                .iter()
+                .find(|key| key.character == source_char)
+                .unwrap();
+            let target = russian_keys
+                .iter()
+                .find(|key| key.key_id == source.key_id && key.shifted == source.shifted)
+                .unwrap();
+            assert_eq!(target.character, target_char);
+        }
+    }
 
     #[test]
     fn rejects_duplicate_mapping_entries() {
