@@ -2,6 +2,8 @@
 
 Switchdom separates language judgment from permission to edit another application's field. These are product responsibilities, including planned ones, rather than proof of deployed components. [Capabilities](capabilities.md) carries their current status; [Product contract](product.md) owns detailed expectations.
 
+## Core parts
+
 ### Switchdom {#core:switchdom}
 
 - Root: true
