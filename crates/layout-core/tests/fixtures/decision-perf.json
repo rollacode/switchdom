@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "english-mistyped-as-russian",
+      "source_layout": "en-qwerty",
+      "input": "ghbdtn",
+      "expected_target": "ru-jcuken",
+      "expected_replacement": "привет",
+      "expected_reason": null
+    },
+    {
+      "name": "russian-mistyped-as-english",
+      "source_layout": "ru-jcuken",
+      "input": "руддщ",
+      "expected_target": "en-qwerty",
+      "expected_replacement": "hello",
+      "expected_reason": null
+    },
+    {
+      "name": "native-english-no-change",
+      "source_layout": "en-qwerty",
+      "input": "hello",
+      "expected_target": null,
+      "expected_replacement": null,
+      "expected_reason": "low_confidence"
+    },
+    {
+      "name": "native-russian-no-change",
+      "source_layout": "ru-jcuken",
+      "input": "привет",
+      "expected_target": null,
+      "expected_replacement": null,
+      "expected_reason": "low_confidence"
+    },
+    {
+      "name": "maximum-96-character-correction",
+      "source_layout": "en-qwerty",
+      "input": "ghbdtnghbdtnghbdtnghbdtnghbdtnghbdtnghbdtnghbdtnghbdtnghbdtnghbdtnghbdtnghbdtnghbdtnghbdtnghbdtn",
+      "expected_target": "ru-jcuken",
+      "expected_replacement": "приветприветприветприветприветприветприветприветприветприветприветприветприветприветприветпривет",
+      "expected_reason": null
+    }
+  ]
+}
