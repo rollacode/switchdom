@@ -1,0 +1,15 @@
+[package]
+name = "layout-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Platform-neutral, extensible keyboard layout decision core"
+
+[lib]
+name = "layout_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "decision-perf-oracle"
+path = "src/bin/decision-perf-oracle.rs"
+
