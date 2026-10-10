@@ -9,7 +9,7 @@ mod platform;
 
 pub use advisor::{
     accept_advice_if_current, Advisor, AdvisorCandidate, AdvisorContext, AdvisorRequest,
-    AdvisorResponse, RequestIdentity,
+    AdvisorResponse, AdvisorTextOptIn, RequestIdentity,
 };
 pub use builtin::russian_english_layout_set;
 pub use platform::{
@@ -40,6 +40,9 @@ pub const MIN_TARGET_CONFIDENCE: f32 = 0.85;
 /// Frozen before the first performance measurement. When another target exists,
 /// the winner must exceed it by this score margin.
 pub const MIN_RUNNER_UP_MARGIN: f32 = 0.08;
+/// Frozen before the first performance measurement. A target must exceed the
+/// known source profile's score by this positive amount.
+pub const MIN_SOURCE_IMPROVEMENT: f32 = 0.08;
 
 /// Extensible language identifier; it is intentionally not a closed RU/EN enum.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -215,14 +218,32 @@ impl fmt::Display for LayoutMappingError {
 
 impl std::error::Error for LayoutMappingError {}
 
-/// A deterministic model that scores text in one language profile.
+/// Bounded, inspectable language evidence emitted by one model evaluation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LexicalEvidence {
+    pub script_matches: bool,
+    pub all_caps: bool,
+    pub alphabetic_characters: u8,
+    pub recognized_bigrams: u8,
+    pub total_bigrams: u8,
+}
+
+/// One deterministic model evaluation and the evidence supporting its score.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LanguageAssessment {
+    pub confidence: f32,
+    pub lexical_evidence: LexicalEvidence,
+}
+
+/// A deterministic model for one language profile.
 ///
-/// Implementations must score in O(text length), use bounded internal state,
-/// return a finite confidence score in `[0, 1]`, and provide provenance for any
-/// embedded model data. The core clamps invalid model scores to zero as an
-/// additional fail-closed measure.
+/// Implementations must evaluate in O(text length), use bounded internal
+/// state, return a finite confidence score in `[0, 1]`, and provide provenance
+/// for any embedded model data. The core clamps invalid scores to zero as an
+/// additional fail-closed measure. A single call returns both score and
+/// evidence so the source and each candidate are evaluated exactly once.
 pub trait LanguageModel: Send + Sync {
-    fn score(&self, text: &str) -> f32;
+    fn evaluate(&self, text: &str) -> LanguageAssessment;
     fn provenance(&self) -> &VersionedProvenance;
 }
 
@@ -426,6 +447,7 @@ pub struct RankedCandidate {
     pub target_layout: LayoutId,
     pub replacement: String,
     pub confidence: f32,
+    pub lexical_evidence: LexicalEvidence,
 }
 
 /// A correction proposal returned only after the frozen policy thresholds pass.
@@ -436,6 +458,10 @@ pub struct CorrectionProposal {
     pub original: String,
     pub replacement: String,
     pub confidence: f32,
+    pub source_confidence: f32,
+    pub source_improvement: f32,
+    pub source_lexical_evidence: LexicalEvidence,
+    pub target_lexical_evidence: LexicalEvidence,
     /// `None` means there was no runner-up; confidence still had to pass.
     pub runner_up_margin: Option<f32>,
 }
@@ -447,6 +473,7 @@ pub enum NoProposalReason {
     InputTooLong,
     NoTargetProfiles,
     UnsupportedTargets,
+    /// The winner missed target confidence or positive source improvement.
     LowConfidence,
     Ambiguous,
 }
@@ -456,6 +483,8 @@ pub enum NoProposalReason {
 pub struct Decision {
     pub proposal: Option<CorrectionProposal>,
     pub ranked_candidates: Vec<RankedCandidate>,
+    pub source_confidence: Option<f32>,
+    pub source_lexical_evidence: Option<LexicalEvidence>,
     /// Counts each non-source profile inspected, including unsupported targets.
     pub target_evaluations: u8,
     pub reason: Option<NoProposalReason>,
@@ -478,11 +507,14 @@ impl AnalyzedInput {
     }
 }
 
-/// Analyze the original text once and evaluate each target profile at most once.
+/// Analyze the original text once, evaluate its source profile once, and
+/// evaluate each eligible target profile at most once.
 ///
 /// Candidate conversion and scoring each visit at most `MAX_TOKEN_CHARS`
 /// characters. The fixed target limit makes the total work O(N) with a maximum
-/// factor of seven; source-target pairs are never enumerated.
+/// factor of seven; source-target pairs are never enumerated. A target must
+/// exceed both the absolute threshold and the source plausibility score by
+/// `MIN_SOURCE_IMPROVEMENT`; source confidence alone never authorizes a change.
 pub fn decide(layout_set: &LayoutSet, known_source_layout: &LayoutId, input: &str) -> Decision {
     let source = match layout_set.profile(known_source_layout) {
         Some(source) => source,
@@ -492,6 +524,8 @@ pub fn decide(layout_set: &LayoutSet, known_source_layout: &LayoutId, input: &st
         Ok(analyzed) => analyzed,
         Err(reason) => return empty_decision(reason, 0),
     };
+    let source_assessment = source.model.evaluate(input);
+    let source_confidence = normalized_score(source_assessment.confidence);
 
     let mut target_evaluations = 0_u8;
     let mut ranked_candidates = Vec::with_capacity(MAX_TARGET_EVALUATIONS);
@@ -507,11 +541,17 @@ pub fn decide(layout_set: &LayoutSet, known_source_layout: &LayoutId, input: &st
         else {
             continue;
         };
-        let confidence = normalized_score(target.model.score(&replacement));
+        let assessment = target.model.evaluate(&replacement);
+        let confidence = if has_discriminative_evidence(assessment.lexical_evidence) {
+            normalized_score(assessment.confidence)
+        } else {
+            0.0
+        };
         ranked_candidates.push(RankedCandidate {
             target_layout: target.layout_id.clone(),
             replacement,
             confidence,
+            lexical_evidence: assessment.lexical_evidence,
         });
     }
 
@@ -531,6 +571,8 @@ pub fn decide(layout_set: &LayoutSet, known_source_layout: &LayoutId, input: &st
         return Decision {
             proposal: None,
             ranked_candidates,
+            source_confidence: Some(source_confidence),
+            source_lexical_evidence: Some(source_assessment.lexical_evidence),
             target_evaluations,
             reason: Some(reason),
         };
@@ -541,6 +583,20 @@ pub fn decide(layout_set: &LayoutSet, known_source_layout: &LayoutId, input: &st
         return Decision {
             proposal: None,
             ranked_candidates,
+            source_confidence: Some(source_confidence),
+            source_lexical_evidence: Some(source_assessment.lexical_evidence),
+            target_evaluations,
+            reason: Some(NoProposalReason::LowConfidence),
+        };
+    }
+
+    let source_improvement = winner.confidence - source_confidence;
+    if source_improvement < MIN_SOURCE_IMPROVEMENT {
+        return Decision {
+            proposal: None,
+            ranked_candidates,
+            source_confidence: Some(source_confidence),
+            source_lexical_evidence: Some(source_assessment.lexical_evidence),
             target_evaluations,
             reason: Some(NoProposalReason::LowConfidence),
         };
@@ -553,6 +609,8 @@ pub fn decide(layout_set: &LayoutSet, known_source_layout: &LayoutId, input: &st
         return Decision {
             proposal: None,
             ranked_candidates,
+            source_confidence: Some(source_confidence),
+            source_lexical_evidence: Some(source_assessment.lexical_evidence),
             target_evaluations,
             reason: Some(NoProposalReason::Ambiguous),
         };
@@ -565,9 +623,15 @@ pub fn decide(layout_set: &LayoutSet, known_source_layout: &LayoutId, input: &st
             original: input.to_owned(),
             replacement: winner.replacement.clone(),
             confidence: winner.confidence,
+            source_confidence,
+            source_improvement,
+            source_lexical_evidence: source_assessment.lexical_evidence,
+            target_lexical_evidence: winner.lexical_evidence,
             runner_up_margin,
         }),
         ranked_candidates,
+        source_confidence: Some(source_confidence),
+        source_lexical_evidence: Some(source_assessment.lexical_evidence),
         target_evaluations,
         reason: None,
     }
@@ -577,6 +641,8 @@ fn empty_decision(reason: NoProposalReason, target_evaluations: u8) -> Decision 
     Decision {
         proposal: None,
         ranked_candidates: Vec::new(),
+        source_confidence: None,
+        source_lexical_evidence: None,
         target_evaluations,
         reason: Some(reason),
     }
@@ -588,6 +654,22 @@ fn normalized_score(score: f32) -> f32 {
     } else {
         0.0
     }
+}
+
+/// Require script-valid multi-letter evidence with multiple recognized
+/// character pairs before a candidate score can reach policy thresholds.
+/// This prevents a custom shape-only model from authorizing a correction by
+/// returning a high scalar score without lexical support.
+fn has_discriminative_evidence(evidence: LexicalEvidence) -> bool {
+    evidence.script_matches
+        && !evidence.all_caps
+        && usize::from(evidence.alphabetic_characters) <= MAX_TOKEN_CHARS
+        && usize::from(evidence.total_bigrams) <= MAX_TOKEN_CHARS - 1
+        && evidence.recognized_bigrams <= evidence.total_bigrams
+        && evidence.alphabetic_characters >= 4
+        && evidence.total_bigrams >= 2
+        && evidence.recognized_bigrams >= 2
+        && u16::from(evidence.recognized_bigrams) * 3 >= u16::from(evidence.total_bigrams) * 2
 }
 
 fn convert_candidate(

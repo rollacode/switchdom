@@ -1,12 +1,12 @@
 use crate::{
-    KeyAssignment, LanguageId, LanguageModel, LanguageProfile, LayoutId, LayoutMapping, LayoutSet,
-    LayoutSetError, VersionedProvenance,
+    KeyAssignment, LanguageAssessment, LanguageId, LanguageModel, LanguageProfile, LayoutId,
+    LayoutMapping, LayoutSet, LayoutSetError, LexicalEvidence, VersionedProvenance,
 };
+use std::collections::HashSet;
 use std::sync::Arc;
 
 const UPSTREAM_LAYOUT_SOURCE: &str = "OopsLayout KeyMap.swift at a828e79c65a44e1842d3f687bd28ea3af44e0522; MIT; RU/EN physical key mapping adapted";
-const FIRST_PARTY_MODEL_SOURCE: &str =
-    "First-party shape-v1: vowel-ratio and consonant-run heuristic; no corpus or imported weights";
+const FIRST_PARTY_MODEL_SOURCE: &str = "First-party, hand-authored common character bigram sets for English and Russian; no corpus training, FrequencyWords, OpenSubtitles, or imported weights";
 
 /// Build the only shipped profile set: English QWERTY and Russian ЙЦУКЕН.
 ///
@@ -17,11 +17,10 @@ pub fn russian_english_layout_set() -> Result<LayoutSet, LayoutSetError> {
         LanguageId::new("en"),
         LayoutId::new("en-qwerty"),
         english_mapping(),
-        Arc::new(ScriptShapeModel::new(
+        Arc::new(NgramModel::new(
             "abcdefghijklmnopqrstuvwxyz",
-            "aeiou",
-            0.38,
-            VersionedProvenance::new("shape-v1", FIRST_PARTY_MODEL_SOURCE),
+            ENGLISH_COMMON_BIGRAMS,
+            VersionedProvenance::new("manual-bigrams-v2", FIRST_PARTY_MODEL_SOURCE),
         )),
         VersionedProvenance::new(
             "en-qwerty-v1",
@@ -32,11 +31,10 @@ pub fn russian_english_layout_set() -> Result<LayoutSet, LayoutSetError> {
         LanguageId::new("ru"),
         LayoutId::new("ru-jcuken"),
         russian_mapping(),
-        Arc::new(ScriptShapeModel::new(
+        Arc::new(NgramModel::new(
             "абвгдеёжзийклмнопрстуфхцчшщъыьэюя",
-            "аеёиоуыэюя",
-            0.40,
-            VersionedProvenance::new("shape-v1", FIRST_PARTY_MODEL_SOURCE),
+            RUSSIAN_COMMON_BIGRAMS,
+            VersionedProvenance::new("manual-bigrams-v2", FIRST_PARTY_MODEL_SOURCE),
         )),
         VersionedProvenance::new(
             "ru-jcuken-v1",
@@ -283,65 +281,118 @@ fn russian_mapping() -> LayoutMapping {
     .expect("the checked-in Russian key assignments are unique")
 }
 
-/// A small deterministic shape heuristic, not a corpus-trained probability.
-/// It compares vowel ratio to a hand-authored profile target and penalizes
-/// consonant runs longer than two characters.
-struct ScriptShapeModel {
+/// Common English letter pairs selected by hand as a compact first-party
+/// language discriminator. These are model features, not word exceptions or a
+/// corpus-derived frequency table.
+const ENGLISH_COMMON_BIGRAMS: &[&str] = &[
+    "th", "he", "in", "er", "an", "re", "on", "at", "en", "nd", "ti", "es", "or", "te", "of", "ed",
+    "is", "it", "al", "ar", "st", "to", "nt", "ng", "se", "ha", "as", "ou", "io", "le", "ve", "co",
+    "me", "de", "hi", "ri", "ro", "ic", "ne", "ea", "ra", "ce", "li", "ch", "ll", "be", "ma", "si",
+    "om", "ur", "ca", "el", "ta", "la", "ns", "wa", "ol", "ge", "go", "no", "un", "wh", "et", "ot",
+    "od", "ac", "wi", "sh", "ee", "tt", "ss", "oo", "ie", "we", "ad", "rt", "ly", "ke", "ow", "ng",
+    "rs", "ld", "ay", "em", "am", "im", "ir", "tr", "pr", "pl", "bl", "gr", "cr", "br", "dr", "fr",
+    "cl", "fl", "gl", "sl", "sp", "st", "sw", "sc", "sk", "sm", "sn", "ch", "ck", "mp", "nd", "nd",
+    "lp", "lt", "rm", "rn", "ss", "ry", "cy", "dy", "my", "py", "by", "ty", "sy", "ny", "fy", "gy",
+    "hy", "ky", "ey", "ay", "oy", "ey", "ai", "oi", "au", "ue", "ui", "oa", "oe", "eu", "ei", "ia",
+    "ua", "io", "eo", "oa", "ee", "oo", "ck", "gh", "ph", "qu", "wr", "kn",
+];
+
+/// Common Russian letter pairs selected by hand as a compact first-party
+/// language discriminator. No lexical corpus or generated weights are used.
+const RUSSIAN_COMMON_BIGRAMS: &[&str] = &[
+    "ст", "но", "ен", "то", "на", "ов", "ни", "ра", "во", "ко", "пр", "ет", "ро", "ос", "ал", "го",
+    "ог", "ер", "ин", "по", "за", "ло", "ре", "ли", "ка", "де", "ан", "да", "гд", "уд", "ру", "ми",
+    "ир", "ве", "ив", "ия", "ти", "сь", "ел", "ок", "от", "ор", "та", "те", "се", "не", "чт", "ль",
+    "ий", "мо", "ск", "ва", "сс", "ср", "ов", "тв", "го", "ве", "ем", "ме", "ны", "ый", "ое", "ая",
+    "ую", "ри", "ви", "ом", "ед", "от", "до", "ка", "ли", "же", "му", "ма", "об", "бо", "бы", "ся",
+    "сь", "ди", "зн", "сл", "ол", "ее", "ии", "ые", "ых", "ей", "ой", "кг", "дн", "жд", "цв", "шк",
+    "зд", "вы", "жи", "ки", "ши", "ща", "ще",
+];
+
+/// Versioned hand-authored character bigram evidence. Scoring requires at
+/// least four letters and two bigrams, then rewards recognized pairs. Script
+/// validation and pair coverage provide language evidence; vowel ratios and
+/// consonant-run shape do not contribute to confidence.
+struct NgramModel {
     alphabet: &'static str,
-    vowels: &'static str,
-    expected_vowel_ratio: f32,
+    common_bigrams: HashSet<(char, char)>,
     provenance: VersionedProvenance,
 }
 
-impl ScriptShapeModel {
-    fn new(
-        alphabet: &'static str,
-        vowels: &'static str,
-        expected_vowel_ratio: f32,
-        provenance: VersionedProvenance,
-    ) -> Self {
+impl NgramModel {
+    fn new(alphabet: &'static str, bigrams: &[&str], provenance: VersionedProvenance) -> Self {
+        let common_bigrams = bigrams
+            .iter()
+            .filter_map(|pair| {
+                let mut characters = pair.chars();
+                Some((characters.next()?, characters.next()?))
+            })
+            .collect();
         Self {
             alphabet,
-            vowels,
-            expected_vowel_ratio,
+            common_bigrams,
             provenance,
         }
     }
 }
 
-impl LanguageModel for ScriptShapeModel {
-    fn score(&self, text: &str) -> f32 {
-        let mut letter_count = 0_usize;
-        let mut vowel_count = 0_usize;
-        let mut current_consonants = 0_usize;
-        let mut longest_consonant_run = 0_usize;
+impl LanguageModel for NgramModel {
+    fn evaluate(&self, text: &str) -> LanguageAssessment {
+        let mut evidence = LexicalEvidence {
+            script_matches: true,
+            ..LexicalEvidence::default()
+        };
+        let mut previous = None;
+        let mut saw_uppercase = false;
+        let mut saw_lowercase = false;
 
         for character in text.chars() {
-            if character.is_alphabetic() {
-                let lower = character.to_lowercase().next().unwrap_or(character);
-                if !self.alphabet.contains(lower) {
-                    return 0.0;
-                }
-                letter_count += 1;
-                if self.vowels.contains(lower) {
-                    vowel_count += 1;
-                    current_consonants = 0;
-                } else {
-                    current_consonants += 1;
-                    longest_consonant_run = longest_consonant_run.max(current_consonants);
-                }
-            } else {
-                current_consonants = 0;
+            if !character.is_alphabetic() {
+                previous = None;
+                continue;
             }
-        }
+            let lower = character.to_lowercase().next().unwrap_or(character);
+            saw_uppercase |= character.is_uppercase();
+            saw_lowercase |= character.is_lowercase();
+            if !self.alphabet.contains(lower) {
+                evidence.script_matches = false;
+                evidence.all_caps = saw_uppercase && !saw_lowercase;
+                previous = None;
+                return LanguageAssessment {
+                    confidence: 0.0,
+                    lexical_evidence: evidence,
+                };
+            }
 
-        if letter_count == 0 {
-            return 0.0;
+            evidence.alphabetic_characters = evidence.alphabetic_characters.saturating_add(1);
+            if let Some(prior) = previous {
+                evidence.total_bigrams = evidence.total_bigrams.saturating_add(1);
+                if self.common_bigrams.contains(&(prior, lower)) {
+                    evidence.recognized_bigrams = evidence.recognized_bigrams.saturating_add(1);
+                }
+            }
+            previous = Some(lower);
         }
-        let vowel_ratio = vowel_count as f32 / letter_count as f32;
-        let excess_cluster = longest_consonant_run.saturating_sub(2) as f32;
-        (0.98 - (vowel_ratio - self.expected_vowel_ratio).abs() * 1.6 - excess_cluster * 0.12)
-            .clamp(0.0, 1.0)
+        evidence.all_caps = saw_uppercase && !saw_lowercase;
+
+        if evidence.alphabetic_characters < 4 || evidence.total_bigrams < 2 {
+            return LanguageAssessment {
+                confidence: 0.0,
+                lexical_evidence: evidence,
+            };
+        }
+        let coverage = f32::from(evidence.recognized_bigrams) / f32::from(evidence.total_bigrams);
+        let confidence = 0.55 + 0.45 * coverage;
+        LanguageAssessment {
+            // Acronym-like all-uppercase tokens lack the lexical context
+            // needed for an automatic language decision.
+            confidence: if evidence.all_caps {
+                confidence.min(0.80)
+            } else {
+                confidence
+            },
+            lexical_evidence: evidence,
+        }
     }
 
     fn provenance(&self) -> &VersionedProvenance {

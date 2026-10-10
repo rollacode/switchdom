@@ -42,9 +42,10 @@ model weights in `OopsLayout.Core/Bigrams.cs`. The MIT license for code does not
 change the content license or the license of derived weights.
 
 This workspace includes none of those lists, generated bigram weights, or the
-generator. The shipped detector is a first-party, hand-authored character-shape
-heuristic (model version `shape-v1`): it compares each profile's vowel ratio
-with a configured ratio and penalizes consonant runs longer than two letters.
-It is not a calibrated probability and is not trained on or derived from
-FrequencyWords, OpenSubtitles, or another corpus. No FrequencyWords content or
-derived data is redistributed.
+generator. The shipped language discriminator (model version
+`manual-bigrams-v2`) uses hand-authored common English and Russian character
+bigrams, validates the expected script, and requires at least four letters and
+two bigram observations. Its features and weights are first-party-authored;
+they are not copied from or trained on FrequencyWords, OpenSubtitles, or
+another corpus. The score is a deterministic heuristic, not a calibrated
+probability. No FrequencyWords content or derived data is redistributed.
