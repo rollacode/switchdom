@@ -17,3 +17,8 @@ OopsLayout.Mac/*.dmg
 CLAUDE.md
 .claude
 .idea
+
+# Rust build output; keep executable Rust source directories tracked.
+/target/
+!crates/*/src/bin/
+!crates/*/src/bin/*.rs
